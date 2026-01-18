@@ -1,263 +1,221 @@
 import { NextRequest, NextResponse } from 'next/server';
-import Anthropic from '@anthropic-ai/sdk';
 import { createServiceClient } from '@/lib/supabase';
 
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
-});
-
-// Search sources for Rabat properties
-const SEARCH_QUERIES = [
-  'Mubawab nouveaux projets immobiliers Rabat 2026',
-  'Avito projets neufs Rabat Hay Riad',
-  'nouveaux programmes immobiliers Rabat Souissi',
-  'Prestigia Rabat nouveaux projets',
-  'Alliances développement Rabat',
+// Mubawab RSS feeds for Rabat
+const RSS_FEEDS = [
+  'https://www.mubawab.ma/fr/st/rabat/immobilier-a-vendre:rss',
+  'https://www.mubawab.ma/fr/st/temara/immobilier-a-vendre:rss',
+  'https://www.mubawab.ma/fr/st/sale/immobilier-a-vendre:rss',
 ];
 
+interface PropertyData {
+  title: string;
+  link: string;
+  description: string;
+  price?: number;
+  district?: string;
+  bedrooms?: number;
+  area?: number;
+}
+
+async function parseRSSFeed(url: string): Promise<PropertyData[]> {
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      },
+    });
+
+    if (!response.ok) {
+      console.error(`Failed to fetch RSS: ${response.status}`);
+      return [];
+    }
+
+    const xmlText = await response.text();
+    const properties: PropertyData[] = [];
+
+    // Simple XML parsing for <item> elements
+    const itemMatches = xmlText.match(/<item>[\s\S]*?<\/item>/g);
+    
+    if (!itemMatches) {
+      console.log('No items found in RSS feed');
+      return [];
+    }
+
+    console.log(`Found ${itemMatches.length} items in feed`);
+
+    for (const item of itemMatches.slice(0, 10)) { // Process max 10 per feed
+      try {
+        // Extract title
+        const titleMatch = item.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/);
+        const title = titleMatch ? titleMatch[1].trim() : null;
+
+        // Extract link
+        const linkMatch = item.match(/<link>(.*?)<\/link>/);
+        const link = linkMatch ? linkMatch[1].trim() : null;
+
+        // Extract description
+        const descMatch = item.match(/<description><!\[CDATA\[(.*?)\]\]><\/description>/);
+        const description = descMatch ? descMatch[1].trim() : '';
+
+        if (!title || !link) continue;
+
+        // Extract price from title or description
+        const priceMatch = (title + ' ' + description).match(/(\d[\d\s,\.]*)\s*(?:DH|MAD|Dhs)/i);
+        let price = null;
+        if (priceMatch) {
+          const priceStr = priceMatch[1].replace(/[\s,]/g, '');
+          price = parseInt(priceStr);
+        }
+
+        // Extract bedrooms
+        const bedroomsMatch = description.match(/(\d+)\s*(?:chambres?|ch|bedroom)/i);
+        const bedrooms = bedroomsMatch ? parseInt(bedroomsMatch[1]) : null;
+
+        // Extract area
+        const areaMatch = description.match(/(\d+)\s*m[²2]/i);
+        const area = areaMatch ? parseInt(areaMatch[1]) : null;
+
+        // Extract district from title or description
+        const districtMatch = (title + ' ' + description).match(/(?:à|in|،)\s*([A-Za-zÀ-ÿ\s]+?)(?:,|،|\s*-|\s*\|)/);
+        const district = districtMatch ? districtMatch[1].trim() : null;
+
+        properties.push({
+          title,
+          link,
+          description: description.substring(0, 500), // Limit description length
+          price,
+          district,
+          bedrooms,
+          area,
+        });
+      } catch (err) {
+        console.error('Error parsing item:', err);
+      }
+    }
+
+    return properties;
+  } catch (error) {
+    console.error(`Error fetching RSS feed ${url}:`, error);
+    return [];
+  }
+}
+
 export async function GET(request: NextRequest) {
-  // Verify cron secret
-  //const authHeader = request.headers.get('authorization');
-  //if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-  //  return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  //}
+  // TEMPORARILY DISABLED FOR TESTING
+  // const authHeader = request.headers.get('authorization');
+  // if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+  //   return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  // }
 
   const startTime = Date.now();
   const supabase = createServiceClient();
 
   try {
-    console.log('Starting property search with web search...');
+    console.log('Starting property search from RSS feeds...');
     
     let totalFound = 0;
     let newPropertiesAdded = 0;
 
-    // Try each search query
-    for (const query of SEARCH_QUERIES) {
-      console.log(`Searching: ${query}`);
+    // Fetch and parse each RSS feed
+    for (const feedUrl of RSS_FEEDS) {
+      console.log(`Fetching RSS feed: ${feedUrl}`);
+      
+      const properties = await parseRSSFeed(feedUrl);
+      totalFound += properties.length;
 
-      try {
-        // Use Claude with web search capability
-        const message = await anthropic.messages.create({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 4000,
-          messages: [
-            {
-              role: 'user',
-              content: `Search the web for: "${query}"
+      // Process each property
+      for (const property of properties) {
+        try {
+          // Check if property already exists (by source URL)
+          const { data: existing } = await supabase
+            .from('properties')
+            .select('id')
+            .eq('source_url', property.link)
+            .maybeSingle();
 
-Find real estate development projects in Rabat, Morocco. Extract the following information for each project you find:
+          if (existing) {
+            console.log(`Property already exists: ${property.title}`);
+            continue;
+          }
 
-- Project name (French and Arabic if available)
-- Developer name
-- District/neighborhood
-- Price range (min-max in MAD)
-- Property type (apartment/villa/commercial/mixed)
-- Number of bedrooms (min-max)
-- Area size in m² (min-max)
-- Construction status (planning/approved/construction/completed)
-- Expected completion date
-- Source URL
+          // District coordinates mapping
+          const districtCoords: Record<string, [number, number]> = {
+            'Agdal': [33.9716, -6.8498],
+            'Hassan': [34.0209, -6.8417],
+            'Hay Riad': [33.9598, -6.8672],
+            'Souissi': [33.9839, -6.8365],
+            'Océan': [34.0380, -6.8120],
+            'Témara': [33.9280, -6.9060],
+            'Salé': [34.0531, -6.7982],
+            'Bouregreg': [34.0250, -6.8320],
+            'Ryad': [33.9598, -6.8672],
+            'Hay Nahda': [33.9845, -6.8534],
+          };
 
-Return ONLY a valid JSON array with this exact structure:
-[
-  {
-    "title": "Project Name",
-    "developer": "Developer Name",
-    "district": "District Name",
-    "price_min": 800000,
-    "price_max": 1500000,
-    "property_type": "apartment",
-    "bedrooms_min": 2,
-    "bedrooms_max": 4,
-    "area_min": 80,
-    "area_max": 150,
-    "construction_status": "construction",
-    "expected_completion": "2026-12",
-    "source_url": "https://..."
-  }
-]
-
-If you find multiple projects, include all of them in the array. If you find no projects, return an empty array: []
-
-IMPORTANT: Return ONLY the JSON array, no other text, no markdown, no explanations.`,
-            },
-          ],
-        });
-
-        // Parse response
-        const textContent = message.content.find((c) => c.type === 'text');
-        if (textContent && 'text' in textContent) {
-          let jsonText = textContent.text.trim();
+          let latitude = 33.9716; // Default Rabat center
+          let longitude = -6.8498;
           
-          // Remove markdown code blocks if present
-          jsonText = jsonText.replace(/```json\n?/g, '').replace(/```\n?/g, '');
-          
-          // Try to find JSON array
-          const jsonMatch = jsonText.match(/\[[\s\S]*\]/);
-          if (jsonMatch) {
-            try {
-              const projects = JSON.parse(jsonMatch[0]);
-              
-              if (Array.isArray(projects) && projects.length > 0) {
-                console.log(`Found ${projects.length} projects from: ${query}`);
-                totalFound += projects.length;
-
-                // Process each project
-                for (const project of projects) {
-                  try {
-                    // Check if property already exists
-                    const { data: existing } = await supabase
-                      .from('properties')
-                      .select('id')
-                      .eq('title', project.title)
-                      .maybeSingle();
-
-                    if (existing) {
-                      console.log(`Property already exists: ${project.title}`);
-                      continue;
-                    }
-
-                    // Get or create developer
-                    let developerId = null;
-                    if (project.developer) {
-                      const { data: developer } = await supabase
-                        .from('developers')
-                        .select('id')
-                        .ilike('name', project.developer)
-                        .maybeSingle();
-
-                      if (developer) {
-                        developerId = developer.id;
-                      } else {
-                        // Create new developer
-                        const { data: newDeveloper } = await supabase
-                          .from('developers')
-                          .insert({
-                            name: project.developer,
-                            rating: 3.5,
-                            total_projects: 1,
-                          })
-                          .select('id')
-                          .single();
-
-                        if (newDeveloper) {
-                          developerId = newDeveloper.id;
-                        }
-                      }
-                    }
-
-                    // Approximate coordinates for districts
-                    const districtCoords: Record<string, [number, number]> = {
-                      'Agdal': [33.9716, -6.8498],
-                      'Hassan': [34.0209, -6.8417],
-                      'Hay Riad': [33.9598, -6.8672],
-                      'Souissi': [33.9839, -6.8365],
-                      'Océan': [34.0380, -6.8120],
-                      'Témara': [33.9280, -6.9060],
-                      'Bouregreg': [34.0250, -6.8320],
-                    };
-
-                    let latitude = null;
-                    let longitude = null;
-                    
-                    if (project.district && districtCoords[project.district]) {
-                      [latitude, longitude] = districtCoords[project.district];
-                    }
-
-                    // Insert property
-                    const { error: insertError } = await supabase.from('properties').insert({
-                      title: project.title,
-                      developer_id: developerId,
-                      district: project.district,
-                      city: 'Rabat',
-                      latitude,
-                      longitude,
-                      price_min: project.price_min,
-                      price_max: project.price_max,
-                      property_type: project.property_type,
-                      bedrooms_min: project.bedrooms_min,
-                      bedrooms_max: project.bedrooms_max,
-                      area_min: project.area_min,
-                      area_max: project.area_max,
-                      construction_status: project.construction_status || 'planning',
-                      expected_completion_date: project.expected_completion,
-                      source_url: project.source_url,
-                      source_name: 'Web Search',
-                      is_active: true,
-                      investment_score: 50, // Default, will be recalculated
-                    });
-
-                    if (!insertError) {
-                      newPropertiesAdded++;
-                      console.log(`Added new property: ${project.title}`);
-                    } else {
-                      console.error(`Error inserting property:`, insertError);
-                    }
-                  } catch (error) {
-                    console.error(`Error processing project:`, error);
-                  }
+          if (property.district) {
+            // Try exact match
+            const coords = districtCoords[property.district];
+            if (coords) {
+              [latitude, longitude] = coords;
+            } else {
+              // Try fuzzy match
+              const districtLower = property.district.toLowerCase();
+              for (const [key, value] of Object.entries(districtCoords)) {
+                if (districtLower.includes(key.toLowerCase()) || key.toLowerCase().includes(districtLower)) {
+                  [latitude, longitude] = value;
+                  break;
                 }
               }
-            } catch (parseError) {
-              console.error(`JSON parse error for query "${query}":`, parseError);
             }
-          } else {
-            console.log(`No JSON found in response for: ${query}`);
           }
-        }
 
-        // Wait between searches to avoid rate limits
-        await new Promise((resolve) => setTimeout(resolve, 3000));
-      } catch (error) {
-        console.error(`Error searching ${query}:`, error);
-        // Continue with next search
-      }
-    }
+          // Determine property type from title/description
+          let propertyType = 'apartment'; // default
+          const text = (property.title + ' ' + property.description).toLowerCase();
+          if (text.includes('villa') || text.includes('maison')) {
+            propertyType = 'villa';
+          } else if (text.includes('terrain') || text.includes('land')) {
+            propertyType = 'land';
+          } else if (text.includes('commerce') || text.includes('local')) {
+            propertyType = 'commercial';
+          }
 
-    const executionTime = Date.now() - startTime;
+          // Determine construction status
+          let constructionStatus = 'approved';
+          if (text.includes('neuf') || text.includes('nouveau') || text.includes('new')) {
+            constructionStatus = 'construction';
+          } else if (text.includes('projet') || text.includes('prochainement')) {
+            constructionStatus = 'planning';
+          }
 
-    // Log search
-    await supabase.from('search_logs').insert({
-      search_query: SEARCH_QUERIES.join(', '),
-      results_found: totalFound,
-      new_properties_added: newPropertiesAdded,
-      execution_time_ms: executionTime,
-      status: 'success',
-    });
+          // Insert property
+          const { error: insertError } = await supabase.from('properties').insert({
+            title: property.title,
+            description: property.description,
+            district: property.district || 'Rabat',
+            city: 'Rabat',
+            latitude,
+            longitude,
+            price_min: property.price ? Math.floor(property.price * 0.95) : null,
+            price_max: property.price ? Math.floor(property.price * 1.05) : null,
+            property_type: propertyType,
+            bedrooms_min: property.bedrooms,
+            bedrooms_max: property.bedrooms,
+            area_min: property.area,
+            area_max: property.area,
+            construction_status: constructionStatus,
+            source_url: property.link,
+            source_name: 'Mubawab RSS',
+            is_active: true,
+            investment_score: 50, // Default, will be recalculated
+          });
 
-    console.log(`Search completed in ${executionTime}ms`);
-    console.log(`Total found: ${totalFound}, New added: ${newPropertiesAdded}`);
-
-    return NextResponse.json({
-      success: true,
-      totalFound,
-      newPropertiesAdded,
-      executionTimeMs: executionTime,
-      message: newPropertiesAdded > 0 
-        ? `Successfully added ${newPropertiesAdded} new properties`
-        : 'No new properties found, but search completed successfully',
-    });
-  } catch (error) {
-    console.error('Cron job error:', error);
-
-    const executionTime = Date.now() - startTime;
-
-    // Log error
-    await supabase.from('search_logs').insert({
-      search_query: SEARCH_QUERIES.join(', '),
-      results_found: 0,
-      new_properties_added: 0,
-      execution_time_ms: executionTime,
-      status: 'error',
-      error_message: error instanceof Error ? error.message : 'Unknown error',
-    });
-
-    return NextResponse.json(
-      {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      },
-      { status: 500 }
-    );
-  }
-}
+          if (!insertError) {
+            newPropertiesAdded++;
+            console.log(`Added new property: ${property.title}`);
+          } else {
+            console.error(`Error
