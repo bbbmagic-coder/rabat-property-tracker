@@ -43,10 +43,10 @@ export async function GET(request: NextRequest) {
           model: 'claude-sonnet-4-20250514',
           max_tokens: 4000,
           tools: [
-            {
-              type: 'web_search_20250305' as any,
-              name: 'web_search',
-            },
+          {
+          name: 'web_search',
+          type: 'custom' as any,
+          } as any,
           ],
           messages: [
             {
