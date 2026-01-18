@@ -21,7 +21,7 @@ export async function GET(request: NextRequest) {
   const sortOrder = searchParams.get('sortOrder') || 'desc';
 
   try {
-    const supabase = await createServerClient();
+    const supabase = createServerClient();
 
     // Build query
     let query = supabase

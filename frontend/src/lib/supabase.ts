@@ -1,6 +1,5 @@
-import { createClientComponentClient, createServerComponentClient } from '@supabase/auth-helpers-nextjs';
+import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
 import { createClient } from '@supabase/supabase-js';
-import { cookies } from 'next/headers';
 
 // Client-side Supabase client (for use in Client Components)
 export const createBrowserClient = () => {
@@ -10,12 +9,17 @@ export const createBrowserClient = () => {
   });
 };
 
-// Server-side Supabase client (for use in Server Components)
-export const createServerClient = async () => {
-  const cookieStore = await cookies();
-  return createServerComponentClient({
-    cookies: () => cookieStore,
-  });
+// Server-side Supabase client (for use in Server Components and API routes)
+export const createServerClient = () => {
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      auth: {
+        persistSession: false,
+      },
+    }
+  );
 };
 
 // Service role client (for admin operations, API routes only)
@@ -41,7 +45,7 @@ export type Database = {
   public: {
     Tables: {
       properties: {
-        Row: any; // Will be replaced with generated types
+        Row: any;
         Insert: any;
         Update: any;
       };
@@ -50,7 +54,6 @@ export type Database = {
         Insert: any;
         Update: any;
       };
-      // ... other tables
     };
   };
 };
