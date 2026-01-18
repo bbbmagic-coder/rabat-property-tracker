@@ -181,7 +181,10 @@ export interface PropertyFilters {
 // Map marker
 export interface PropertyMarker {
   id: string;
-  position: google.maps.LatLngLiteral;
+  position: {
+    lat: number;
+    lng: number;
+  };
   title: string;
   score: number;
   price_min?: number;
