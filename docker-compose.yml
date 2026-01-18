@@ -1,0 +1,89 @@
+version: '3.8'
+
+services:
+  # PostgreSQL + PostGIS
+  postgres:
+    image: postgis/postgis:15-3.3
+    container_name: rabat-tracker-db
+    environment:
+      POSTGRES_DB: rabat_tracker
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/supabase-schema-local.sql:/docker-entrypoint-initdb.d/01-schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Next.js Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.local
+    container_name: rabat-tracker-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      # Database (direct PostgreSQL connection instead of Supabase)
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/rabat_tracker
+      
+      # Google Maps
+      NEXT_PUBLIC_GOOGLE_MAPS_API_KEY: ${GOOGLE_MAPS_API_KEY}
+      
+      # Anthropic
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      
+      # Email (optional)
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      NOTIFICATION_EMAIL_FROM: ${NOTIFICATION_EMAIL_FROM:-notifications@localhost}
+      
+      # App
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      CRON_SECRET: ${CRON_SECRET:-local-dev-secret}
+      
+      # Auth (simple local auth)
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-local-dev-nextauth-secret}
+      NEXTAUTH_URL: http://localhost:3000
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: npm run dev
+
+  # Cron Job Simulator (runs every 30 minutes)
+  cron-simulator:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.local
+    container_name: rabat-tracker-cron
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/rabat_tracker
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      CRON_SECRET: ${CRON_SECRET:-local-dev-secret}
+      APP_URL: http://frontend:3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      frontend:
+        condition: service_started
+    command: >
+      sh -c "
+        while true; do
+          echo 'Running property search...'
+          curl -X GET 'http://frontend:3000/api/cron/search-properties' \
+            -H 'Authorization: Bearer ${CRON_SECRET:-local-dev-secret}'
+          echo 'Sleeping for 30 minutes...'
+          sleep 1800
+        done
+      "
+
+volumes:
+  postgres_data:
