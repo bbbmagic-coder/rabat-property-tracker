@@ -76,8 +76,7 @@ async function parseRSSFeed(url: string): Promise<PropertyData[]> {
 
         // Extract district from title or description
         const districtMatch = (title + ' ' + description).match(/(?:à|in|،)\s*([A-Za-zÀ-ÿ\s]+?)(?:,|،|\s*-|\s*\|)/);
-        const district = districtMatch ? districtMatch[1].trim() : null;
-
+        const district = districtMatch ? districtMatch[1].trim() : undefined;
         properties.push({
           title,
           link,
