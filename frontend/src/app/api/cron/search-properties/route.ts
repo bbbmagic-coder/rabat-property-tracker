@@ -218,4 +218,63 @@ export async function GET(request: NextRequest) {
             newPropertiesAdded++;
             console.log(`Added new property: ${property.title}`);
           } else {
-            console.error(`Error
+            console.error(`Error inserting property:`, insertError);
+          }
+        } catch (error) {
+          console.error(`Error processing property:`, error);
+        }
+      }
+
+      // Wait between feeds to avoid rate limits
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+
+    const executionTime = Date.now() - startTime;
+
+    // Log search
+    await supabase.from('search_logs').insert({
+      search_query: RSS_FEEDS.join(', '),
+      results_found: totalFound,
+      new_properties_added: newPropertiesAdded,
+      execution_time_ms: executionTime,
+      status: 'success',
+    });
+
+    console.log(`Search completed in ${executionTime}ms`);
+    console.log(`Total found: ${totalFound}, New added: ${newPropertiesAdded}`);
+
+    return NextResponse.json({
+      success: true,
+      totalFound,
+      newPropertiesAdded,
+      executionTimeMs: executionTime,
+      message: newPropertiesAdded > 0 
+        ? `Successfully added ${newPropertiesAdded} new properties from RSS feeds`
+        : totalFound > 0 
+          ? 'Properties found but already exist in database'
+          : 'No new properties found in RSS feeds',
+    });
+  } catch (error) {
+    console.error('Cron job error:', error);
+
+    const executionTime = Date.now() - startTime;
+
+    // Log error
+    await supabase.from('search_logs').insert({
+      search_query: RSS_FEEDS.join(', '),
+      results_found: 0,
+      new_properties_added: 0,
+      execution_time_ms: executionTime,
+      status: 'error',
+      error_message: error instanceof Error ? error.message : 'Unknown error',
+    });
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+      },
+      { status: 500 }
+    );
+  }
+}
