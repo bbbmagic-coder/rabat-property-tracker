@@ -1,142 +1,167 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServiceClient } from '@/lib/supabase';
 
-// Mubawab RSS feeds for Rabat
-const RSS_FEEDS = [
-   'https://www.avito.ma/fr/rabat/immobilier-a_vendre:rss',
-  'https://www.avito.ma/fr/temara/immobilier-a_vendre:rss',
-  'https://www.avito.ma/fr/sale/immobilier-a_vendre:rss',
+const SEARCH_QUERIES = [
+  'site:avito.ma immobilier Rabat neuf',
+  'site:avito.ma appartement Rabat neuf projet',
+  'site:mubawab.ma nouveau projet Rabat',
+  'site:mubawab.ma résidence Rabat neuf',
+  'immobilier neuf Rabat Hay Riad',
+  'projet immobilier Rabat Souissi',
 ];
 
-interface PropertyData {
+interface GoogleSearchResult {
   title: string;
   link: string;
-  description: string;
-  price?: number;
-  district?: string;
-  bedrooms?: number;
-  area?: number;
+  snippet: string;
 }
 
-async function parseRSSFeed(url: string): Promise<PropertyData[]> {
+async function googleCustomSearch(query: string): Promise<GoogleSearchResult[]> {
+  const apiKey = process.env.GOOGLE_SEARCH_API_KEY;
+  const searchEngineId = process.env.GOOGLE_SEARCH_ENGINE_ID;
+
+  if (!apiKey || !searchEngineId) {
+    console.error('Google Search API credentials not configured');
+    return [];
+  }
+
   try {
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      },
-    });
-
-    if (!response.ok) {
-      console.error(`Failed to fetch RSS: ${response.status}`);
-      return [];
-    }
-
-    const xmlText = await response.text();
-    const properties: PropertyData[] = [];
-
-    // Simple XML parsing for <item> elements
-    const itemMatches = xmlText.match(/<item>[\s\S]*?<\/item>/g);
+    const url = `https://www.googleapis.com/customsearch/v1?key=${apiKey}&cx=${searchEngineId}&q=${encodeURIComponent(query)}&num=10`;
     
-    if (!itemMatches) {
-      console.log('No items found in RSS feed');
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      console.error(`Google Search API error: ${response.status}`);
       return [];
     }
 
-    console.log(`Found ${itemMatches.length} items in feed`);
-
-    for (const item of itemMatches.slice(0, 10)) { // Process max 10 per feed
-      try {
-        // Extract title
-        const titleMatch = item.match(/<title><!\[CDATA\[(.*?)\]\]><\/title>/);
-        const title = titleMatch ? titleMatch[1].trim() : null;
-
-        // Extract link
-        const linkMatch = item.match(/<link>(.*?)<\/link>/);
-        const link = linkMatch ? linkMatch[1].trim() : null;
-
-        // Extract description
-        const descMatch = item.match(/<description><!\[CDATA\[(.*?)\]\]><\/description>/);
-        const description = descMatch ? descMatch[1].trim() : '';
-
-        if (!title || !link) continue;
-
-        // Extract price from title or description
-        const priceMatch = (title + ' ' + description).match(/(\d[\d\s,\.]*)\s*(?:DH|MAD|Dhs)/i);
-        let price = undefined;
-        if (priceMatch) {
-          const priceStr = priceMatch[1].replace(/[\s,]/g, '');
-          price = parseInt(priceStr);
-        }
-
-        const bedroomsMatch = description.match(/(\d+)\s*(?:chambres?|ch|bedroom)/i);
-        const bedrooms = bedroomsMatch ? parseInt(bedroomsMatch[1]) : undefined;
-
-        const areaMatch = description.match(/(\d+)\s*m[²2]/i);
-        const area = areaMatch ? parseInt(areaMatch[1]) : undefined;
-
-        // Extract district from title or description
-        const districtMatch = (title + ' ' + description).match(/(?:à|in|،)\s*([A-Za-zÀ-ÿ\s]+?)(?:,|،|\s*-|\s*\|)/);
-        const district = districtMatch ? districtMatch[1].trim() : undefined;
-        properties.push({
-          title,
-          link,
-          description: description.substring(0, 500), // Limit description length
-          price,
-          district,
-          bedrooms,
-          area,
-        });
-      } catch (err) {
-        console.error('Error parsing item:', err);
-      }
+    const data = await response.json();
+    
+    if (!data.items || data.items.length === 0) {
+      console.log(`No results found for: ${query}`);
+      return [];
     }
 
-    return properties;
+    return data.items.map((item: any) => ({
+      title: item.title,
+      link: item.link,
+      snippet: item.snippet || '',
+    }));
   } catch (error) {
-    console.error(`Error fetching RSS feed ${url}:`, error);
+    console.error(`Error in Google Search for "${query}":`, error);
     return [];
   }
 }
 
-export async function GET(request: NextRequest) {
-  // TEMPORARILY DISABLED FOR TESTING
-  // const authHeader = request.headers.get('authorization');
-  // if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-  //   return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  // }
+function extractPropertyData(result: GoogleSearchResult) {
+  const { title, link, snippet } = result;
+  const text = (title + ' ' + snippet).toLowerCase();
 
+  // Extract price
+  const priceMatch = text.match(/(\d[\d\s,\.]*)\s*(?:dh|mad|dhs|dirham)/i);
+  let priceMin = undefined;
+  let priceMax = undefined;
+  if (priceMatch) {
+    const priceStr = priceMatch[1].replace(/[\s,\.]/g, '');
+    const price = parseInt(priceStr);
+    if (price > 10000) {
+      priceMin = Math.floor(price * 0.95);
+      priceMax = Math.floor(price * 1.05);
+    }
+  }
+
+  // Extract bedrooms
+  const bedroomsMatch = text.match(/(\d+)\s*(?:chambres?|ch\b|bedroom)/i);
+  const bedrooms = bedroomsMatch ? parseInt(bedroomsMatch[1]) : undefined;
+
+  // Extract area
+  const areaMatch = text.match(/(\d+)\s*m[²2]/i);
+  const area = areaMatch ? parseInt(areaMatch[1]) : undefined;
+
+  // Extract district
+  const districts = ['Agdal', 'Hassan', 'Hay Riad', 'Souissi', 'Océan', 'Témara', 'Salé', 'Bouregreg', 'Hay Nahda', 'Aviation'];
+  let district = undefined;
+  for (const d of districts) {
+    if (text.includes(d.toLowerCase())) {
+      district = d;
+      break;
+    }
+  }
+
+  // Property type
+  let propertyType = 'apartment';
+  if (text.includes('villa') || text.includes('maison')) {
+    propertyType = 'villa';
+  } else if (text.includes('terrain') || text.includes('land')) {
+    propertyType = 'land';
+  } else if (text.includes('commerce') || text.includes('local')) {
+    propertyType = 'commercial';
+  }
+
+  // Construction status
+  let constructionStatus = 'approved';
+  if (text.includes('neuf') || text.includes('nouveau') || text.includes('new') || text.includes('projet')) {
+    constructionStatus = 'construction';
+  } else if (text.includes('vefa') || text.includes('sur plan')) {
+    constructionStatus = 'planning';
+  }
+
+  // Source
+  let sourceName = 'Google Search';
+  if (link.includes('avito.ma')) {
+    sourceName = 'Avito.ma';
+  } else if (link.includes('mubawab.ma')) {
+    sourceName = 'Mubawab.ma';
+  }
+
+  return {
+    title,
+    link,
+    snippet,
+    priceMin,
+    priceMax,
+    bedrooms,
+    area,
+    district,
+    propertyType,
+    constructionStatus,
+    sourceName,
+  };
+}
+
+export async function GET(request: NextRequest) {
   const startTime = Date.now();
   const supabase = createServiceClient();
 
   try {
-    console.log('Starting property search from RSS feeds...');
+    console.log('Starting property search via Google Custom Search...');
     
     let totalFound = 0;
     let newPropertiesAdded = 0;
 
-    // Fetch and parse each RSS feed
-    for (const feedUrl of RSS_FEEDS) {
-      console.log(`Fetching RSS feed: ${feedUrl}`);
+    for (const query of SEARCH_QUERIES) {
+      console.log(`Searching Google: ${query}`);
       
-      const properties = await parseRSSFeed(feedUrl);
-      totalFound += properties.length;
+      const results = await googleCustomSearch(query);
+      totalFound += results.length;
 
-      // Process each property
-      for (const property of properties) {
+      for (const result of results) {
         try {
-          // Check if property already exists (by source URL)
+          // Check if property already exists
           const { data: existing } = await supabase
             .from('properties')
             .select('id')
-            .eq('source_url', property.link)
+            .eq('source_url', result.link)
             .maybeSingle();
 
           if (existing) {
-            console.log(`Property already exists: ${property.title}`);
+            console.log(`Property already exists: ${result.title}`);
             continue;
           }
 
-          // District coordinates mapping
+          const propertyData = extractPropertyData(result);
+
+          // District coordinates
           const districtCoords: Record<string, [number, number]> = {
             'Agdal': [33.9716, -6.8498],
             'Hassan': [34.0209, -6.8417],
@@ -146,83 +171,51 @@ export async function GET(request: NextRequest) {
             'Témara': [33.9280, -6.9060],
             'Salé': [34.0531, -6.7982],
             'Bouregreg': [34.0250, -6.8320],
-            'Ryad': [33.9598, -6.8672],
             'Hay Nahda': [33.9845, -6.8534],
+            'Aviation': [33.9500, -6.8600],
           };
 
           let latitude = 33.9716; // Default Rabat center
           let longitude = -6.8498;
           
-          if (property.district) {
-            // Try exact match
-            const coords = districtCoords[property.district];
-            if (coords) {
-              [latitude, longitude] = coords;
-            } else {
-              // Try fuzzy match
-              const districtLower = property.district.toLowerCase();
-              for (const [key, value] of Object.entries(districtCoords)) {
-                if (districtLower.includes(key.toLowerCase()) || key.toLowerCase().includes(districtLower)) {
-                  [latitude, longitude] = value;
-                  break;
-                }
-              }
-            }
-          }
-
-          // Determine property type from title/description
-          let propertyType = 'apartment'; // default
-          const text = (property.title + ' ' + property.description).toLowerCase();
-          if (text.includes('villa') || text.includes('maison')) {
-            propertyType = 'villa';
-          } else if (text.includes('terrain') || text.includes('land')) {
-            propertyType = 'land';
-          } else if (text.includes('commerce') || text.includes('local')) {
-            propertyType = 'commercial';
-          }
-
-          // Determine construction status
-          let constructionStatus = 'approved';
-          if (text.includes('neuf') || text.includes('nouveau') || text.includes('new')) {
-            constructionStatus = 'construction';
-          } else if (text.includes('projet') || text.includes('prochainement')) {
-            constructionStatus = 'planning';
+          if (propertyData.district && districtCoords[propertyData.district]) {
+            [latitude, longitude] = districtCoords[propertyData.district];
           }
 
           // Insert property
           const { error: insertError } = await supabase.from('properties').insert({
-            title: property.title,
-            description: property.description,
-            district: property.district || 'Rabat',
+            title: propertyData.title,
+            description: propertyData.snippet.substring(0, 500),
+            district: propertyData.district || 'Rabat',
             city: 'Rabat',
             latitude,
             longitude,
-            price_min: property.price ? Math.floor(property.price * 0.95) : null,
-            price_max: property.price ? Math.floor(property.price * 1.05) : null,
-            property_type: propertyType,
-            bedrooms_min: property.bedrooms,
-            bedrooms_max: property.bedrooms,
-            area_min: property.area,
-            area_max: property.area,
-            construction_status: constructionStatus,
-            source_url: property.link,
-            source_name: 'Avito RSS',
+            price_min: propertyData.priceMin,
+            price_max: propertyData.priceMax,
+            property_type: propertyData.propertyType,
+            bedrooms_min: propertyData.bedrooms,
+            bedrooms_max: propertyData.bedrooms,
+            area_min: propertyData.area,
+            area_max: propertyData.area,
+            construction_status: propertyData.constructionStatus,
+            source_url: propertyData.link,
+            source_name: propertyData.sourceName,
             is_active: true,
-            investment_score: 50, // Default, will be recalculated
+            investment_score: 55, // Default
           });
 
           if (!insertError) {
             newPropertiesAdded++;
-            console.log(`Added new property: ${property.title}`);
+            console.log(`Added new property: ${propertyData.title}`);
           } else {
             console.error(`Error inserting property:`, insertError);
           }
         } catch (error) {
-          console.error(`Error processing property:`, error);
+          console.error(`Error processing result:`, error);
         }
       }
 
-      // Wait between feeds to avoid rate limits
+      // Wait between searches to respect rate limits
       await new Promise((resolve) => setTimeout(resolve, 2000));
     }
 
@@ -230,7 +223,7 @@ export async function GET(request: NextRequest) {
 
     // Log search
     await supabase.from('search_logs').insert({
-      search_query: RSS_FEEDS.join(', '),
+      search_query: SEARCH_QUERIES.join(', '),
       results_found: totalFound,
       new_properties_added: newPropertiesAdded,
       execution_time_ms: executionTime,
@@ -246,19 +239,18 @@ export async function GET(request: NextRequest) {
       newPropertiesAdded,
       executionTimeMs: executionTime,
       message: newPropertiesAdded > 0 
-        ? `Successfully added ${newPropertiesAdded} new properties from RSS feeds`
+        ? `Successfully added ${newPropertiesAdded} new properties via Google Search`
         : totalFound > 0 
           ? 'Properties found but already exist in database'
-          : 'No new properties found in RSS feeds',
+          : 'No new properties found',
     });
   } catch (error) {
     console.error('Cron job error:', error);
 
     const executionTime = Date.now() - startTime;
 
-    // Log error
     await supabase.from('search_logs').insert({
-      search_query: RSS_FEEDS.join(', '),
+      search_query: SEARCH_QUERIES.join(', '),
       results_found: 0,
       new_properties_added: 0,
       execution_time_ms: executionTime,
