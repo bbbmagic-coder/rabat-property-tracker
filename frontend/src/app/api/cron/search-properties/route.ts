@@ -3,9 +3,9 @@ import { createServiceClient } from '@/lib/supabase';
 
 // Mubawab RSS feeds for Rabat
 const RSS_FEEDS = [
-  'https://www.mubawab.ma/fr/st/rabat/immobilier-a-vendre:rss',
-  'https://www.mubawab.ma/fr/st/temara/immobilier-a-vendre:rss',
-  'https://www.mubawab.ma/fr/st/sale/immobilier-a-vendre:rss',
+   'https://www.avito.ma/fr/rabat/immobilier-a_vendre:rss',
+  'https://www.avito.ma/fr/temara/immobilier-a_vendre:rss',
+  'https://www.avito.ma/fr/sale/immobilier-a_vendre:rss',
 ];
 
 interface PropertyData {
@@ -206,7 +206,7 @@ export async function GET(request: NextRequest) {
             area_max: property.area,
             construction_status: constructionStatus,
             source_url: property.link,
-            source_name: 'Mubawab RSS',
+            source_name: 'Avito RSS',
             is_active: true,
             investment_score: 50, // Default, will be recalculated
           });
