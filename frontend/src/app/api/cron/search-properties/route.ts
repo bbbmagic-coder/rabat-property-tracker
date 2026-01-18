@@ -62,19 +62,17 @@ async function parseRSSFeed(url: string): Promise<PropertyData[]> {
 
         // Extract price from title or description
         const priceMatch = (title + ' ' + description).match(/(\d[\d\s,\.]*)\s*(?:DH|MAD|Dhs)/i);
-        let price = null;
+        let price = undefined;
         if (priceMatch) {
           const priceStr = priceMatch[1].replace(/[\s,]/g, '');
           price = parseInt(priceStr);
         }
 
-        // Extract bedrooms
         const bedroomsMatch = description.match(/(\d+)\s*(?:chambres?|ch|bedroom)/i);
-        const bedrooms = bedroomsMatch ? parseInt(bedroomsMatch[1]) : null;
+        const bedrooms = bedroomsMatch ? parseInt(bedroomsMatch[1]) : undefined;
 
-        // Extract area
         const areaMatch = description.match(/(\d+)\s*m[²2]/i);
-        const area = areaMatch ? parseInt(areaMatch[1]) : null;
+        const area = areaMatch ? parseInt(areaMatch[1]) : undefined;
 
         // Extract district from title or description
         const districtMatch = (title + ' ' + description).match(/(?:à|in|،)\s*([A-Za-zÀ-ÿ\s]+?)(?:,|،|\s*-|\s*\|)/);
